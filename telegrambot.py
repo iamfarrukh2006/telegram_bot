@@ -12,6 +12,7 @@ def run():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
 Thread(target=run).start()
+
 import datetime
 import telebot
 from telebot import types
@@ -25,14 +26,13 @@ FRIENDS = ["Farrux", "Behruz", "Temur", "Jalol", "Bunyod"]
 # Ma'lumotlarni saqlash (Chat ID bo'yicha)
 data = {}
 
-
 def get_chat_data(chat_id):
     if chat_id not in data:
         data[chat_id] = {
-            'expenses': []  # Xarajatlar ro'yxati
+            'expenses': [],  # Xarajatlar ro'yxati
+            'temp_expense': {} # Vaqtincha kiritilayotgan xarajat ma'lumotlari
         }
     return data[chat_id]
-
 
 # Asosiy menyu
 def main_keyboard():
@@ -95,67 +95,101 @@ def process_amount(message, payer_name):
 
 def process_comment(message, payer_name, amount):
     comment = message.text
+    chat_id = message.chat.id
+    chat_data = get_chat_data(chat_id)
+    
+    # Vaqtincha ma'lumotni saqlab turamiz
+    chat_data['temp_expense'] = {
+        'payer': payer_name,
+        'amount': amount,
+        'comment': comment,
+        'consumers': FRIENDS.copy() # Boshlang'ich holatda hamma tanlangan bo'ladi
+    }
 
-    # Kimlar uchunligi tanlash uchun inline tugmalar
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("🌐 Hamma uchun", callback_data=f"for_all_{payer_name}_{amount}_{comment}"))
-    for name in FRIENDS:
-        markup.add(types.InlineKeyboardButton(f"👤 Faqat {name} uchun / bir nechta",
-                                              callback_data=f"custom_{payer_name}_{amount}_{comment}"))
+    # Kimlar uchunligi tanlash uchun inline tugmalar (Birma-bir yoqib/o'chirish uchun)
+    markup = get_split_keyboard(chat_data['temp_expense']['consumers'])
 
     bot.send_message(
-        message.chat.id,
-        f"Ushbu xarajat ({amount:,.0f} so'm) kimlar uchun mo'ljallangan?",
+        chat_id,
+        f"Tanlang: {payer_name} qilgan {amount:,.0f} so'mlik xarajat kimlarga bo'linsin?\n(Kerakli odam ustiga bosib o'chiring yoki qoldiring, so'ng saqlang):",
         reply_markup=markup,
         parse_mode='Markdown'
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("for_all_"))
-def callback_for_all(call):
-    _, payer_name, amount_str, comment = call.data.split("_", 3)
-    amount = float(amount_str)
+def get_split_keyboard(selected_users):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for name in FRIENDS:
+        icon = "✅" if name in selected_users else "❌"
+        markup.add(types.InlineKeyboardButton(f"{icon} {name}", callback_data=f"toggle_{name}"))
+    
+    markup.add(types.InlineKeyboardButton("💾 Xarajatni saqlash", callback_data="save_expense"))
+    return markup
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_"))
+def callback_toggle_consumer(call):
+    bot.answer_callback_query(call.id)
+    name = call.data.split("_")[1]
+    chat_id = call.message.chat.id
+    chat_data = get_chat_data(chat_id)
+    
+    if 'temp_expense' not in chat_data:
+        bot.send_message(chat_id, "⚠️ Xatolik yuz berdi. Iltimos, xarajatni qaytadan qo'shing.")
+        return
+
+    consumers = chat_data['temp_expense']['consumers']
+    if name in consumers:
+        if len(consumers) == 1:
+            bot.answer_callback_query(call.id, "⚠️ Kamida 👤 bitta odam qolishi kerak!", show_alert=True)
+            return
+        consumers.remove(name)
+    else:
+        consumers.append(name)
+
+    # Tugmalarni yangilaymiz
+    bot.edit_message_reply_markup(
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        reply_markup=get_split_keyboard(consumers)
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "save_expense")
+def callback_save_expense(call):
+    bot.answer_callback_query(call.id)
+    chat_id = call.message.chat.id
+    chat_data = get_chat_data(chat_id)
+
+    if 'temp_expense' not in chat_data or not chat_data['temp_expense']:
+        bot.send_message(chat_id, "⚠️ Saqlash uchun ma'lumot topilmadi.")
+        return
+
+    exp = chat_data['temp_expense']
     today = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
-    chat_data = get_chat_data(call.message.chat.id)
     chat_data['expenses'].append({
-        'payer': payer_name,
-        'amount': amount,
-        'comment': comment,
-        'consumers': FRIENDS.copy(),  # Hamma uchun
+        'payer': exp['payer'],
+        'amount': exp['amount'],
+        'comment': exp['comment'],
+        'consumers': exp['consumers'],
         'date': today
     })
 
+    consumers_str = ", ".join(exp['consumers'])
     bot.edit_message_text(
-        f"✅ **Xarajat qo'shildi!**\n\n"
-        f"👤 Kim to'ladi: **{payer_name}**\n"
-        f"💰 Summa: **{amount:,.0f} so'm**\n"
-        f"📝 Izoh: {comment}\n"
-        f"👥 Kimlar uchun: **Hamma (5 kishi)**\n"
+        f"✅ **Xarajat muvaffaqiyatli saqlandi!**\n\n"
+        f"👤 Kim to'ladi: **{exp['payer']}**\n"
+        f"💰 Summa: **{exp['amount']:,.0f} so'm**\n"
+        f"📝 Izoh: {exp['comment']}\n"
+        f"👥 Kimlar uchun: **{consumers_str}**\n"
         f"📅 Sana: {today}",
-        call.message.chat.id,
-        call.message.message_id,
+        chat_id=chat_id,
+        message_id=call.message.message_id,
         parse_mode='Markdown'
     )
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("custom_"))
-def callback_custom_select(call):
-    # Oddiylik va qulaylik uchun tanlovni 5 kishidan kimlar qatnashishini belgilash oynasi
-    _, payer_name, amount_str, comment = call.data.split("_", 3)
-    amount = float(amount_str)
-
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    for name in FRIENDS:
-        markup.add(types.InlineKeyboardButton(f"✅ {name}ni qo'shish",
-                                              callback_data=f"addConsumer_{payer_name}_{amount}_{comment}_{name}"))
-
-    bot.edit_message_text(
-        message_id=call.message.message_id,
-        chat_id=call.message.chat.id,
-        text=f"Tanlang: {payer_name} qilgan {amount:,.0f} so'mlik xarajat kimlarga bo'linsin? (Birma-bir tanlang yoki barchasini belgilang):",
-        reply_markup=markup
-    )
+    # Vaqtinchalik xotirani tozalaymiz
+    chat_data['temp_expense'] = {}
 
 
 # 2. XARAJATLAR TARIXI
@@ -186,10 +220,7 @@ def calculate_report(message):
         bot.send_message(message.chat.id, "❌ Hali xarajatlar kiritilmagani uchun hisobot mavjud emas.")
         return
 
-    # Har bir kishining umumiy sarflagan puli va balansini hisoblash
     paid_totals = {name: 0.0 for name in FRIENDS}
-    # Har bir kishi boshqalarga qancha qarzdor yoki unga qancha tushishi
-    # Balans = (O'zi sarflagan) - (Boshqalar uchun uning nomidan sarflangan ulushlar yig'indisi)
     net_balance = {name: 0.0 for name in FRIENDS}
     total_spent = 0
 
@@ -201,19 +232,11 @@ def calculate_report(message):
         total_spent += amount
         paid_totals[payer] += amount
 
-        # Shu xarajat har bir iste'molchiga qanchadan tushadi
         share = amount / len(consumers)
         for consumer in consumers:
-            net_balance[payer] += share  # To'lagan odamga qo'shiladi
-            net_balance[consumer] -= share  # iste'mol qilgan odamdan ayriladi
+            net_balance[payer] += share  
+            net_balance[consumer] -= share  
 
-    report = f"📊 **ADOLATLI HISOBOT VA TAQSIMOT**\n"
-    report += f"➖➖➖➖➖➖➖➖➖➖\n"
-    report += f"💰 **Jami xarajat:** {total_spent:,.0f} so'm\n\n"
-
-    report += f"👤 **Kim qancha sarfladi:**\n"
-    for name in FRIENDS:
-        report += f"• {name}: {paid_totals[name]:,.0f} so'm"    # Qayta tuzish
     report = f"📊 **ADOLATLI HISOBOT VA TAQSIMOT**\n"
     report += f"➖➖➖➖➖➖➖➖➖➖\n"
     report += f"💰 **Jami xarajat:** {total_spent:,.0f} so'm\n\n"
@@ -224,15 +247,14 @@ def calculate_report(message):
 
     report += f"\n⚖️ **Qarzlar va O'zaro Hisob-kitob:**\n"
 
-    # Kim kimga berishi kerakligini hisoblash
     debtors = []
     creditors = []
 
     for name, bal in net_balance.items():
         if bal < -0.01:
-            debtors.append([name, -bal])  # Berishi kerak bo'lganlar
+            debtors.append([name, -bal])  
         elif bal > 0.01:
-            creditors.append([name, bal])  # Olishi kerak bo'lganlar
+            creditors.append([name, bal])  
 
     if not debtors and not creditors:
         report += "⚪️ Hamma hisob-kitob toza! Qarzdorlar yo'q.\n"
@@ -245,10 +267,10 @@ def calculate_report(message):
     bot.send_message(message.chat.id, report, parse_mode='Markdown')
 
 
-# 4. TARIXNI TOZALASH (Faqat joriy sana kodi orqali)
+# 4. TARIXNI TOZALASH
 @bot.message_handler(func=lambda m: m.text == "🗑 Tarixni tozalash")
 def clear_history_prompt(message):
-    today_code = datetime.datetime.now().strftime("%Y%m%d")  # Masalan: 20261022
+    today_code = datetime.datetime.now().strftime("%Y%m%d")  
     msg = bot.send_message(
         message.chat.id,
         "⚠️ Tarixni tozalash uchun maxfiy kodni kiriting\n"
