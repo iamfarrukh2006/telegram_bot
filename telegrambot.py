@@ -18,7 +18,7 @@ def run():
 Thread(target=run).start()
 
 # --- TELEGRAM BOT SOZLAMALARI ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8714133730:AAHmvdF9wRpbsbk_vQFVOeZw-5_wW3xQigU")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8714133730:AAGDvkDpf2Nt5VRt8MGGeejkotALI00JCp0")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 USERS = ["Farrux", "Bexruz", "Temur", "Jalol", "Bunyod"]
