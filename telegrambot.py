@@ -1,17 +1,17 @@
+import os
 import sqlite3
+from threading import Thread
 import telebot
 from telebot import types
+from flask import Flask
 
 # --- TELEGRAM BOT SOZLAMALARI ---
+# Agar 409 konflikt xatosi ketsa, @BotFather'dan yangi token olib shu yerga yozasiz
 BOT_TOKEN = "8714133730:AAHV9GEV3wGXC5pbExQbHMJjYllnJt2Xt7k"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 USERS = ["Farrux", "Bexruz", "Temur", "Jalol", "Bunyod"]
-
-# BAZANI TOZALASH UCHUN MAXSUS PIN-KOD
 CLEAR_PIN = "1234"
-
-# --- MA'LUMOTLAR BAZASI (SQLite) ---
 DB_NAME = "expenses.db"
 
 def init_db():
@@ -31,7 +31,6 @@ def init_db():
 
 init_db()
 
-# Vaqtinchalik kiritish va holat xotirasi (User Session)
 user_states = {}
 
 def get_main_keyboard():
@@ -59,7 +58,6 @@ def send_welcome(message):
         reply_markup=get_main_keyboard()
     )
 
-# --- XARAJAT QO'SHISH BO'LIMI ---
 @bot.message_handler(func=lambda msg: msg.text == "➕ Xarajat qo'shish")
 def start_add_expense(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -85,13 +83,13 @@ def process_amount(message):
 
 @bot.message_handler(func=lambda msg: msg.chat.id in user_states and "amount" in user_states[msg.chat.id] and "description" not in user_states[msg.chat.id] and user_states[msg.chat.id].get("state") not in ["awaiting_pin", "awaiting_receipt"])
 def process_description(message):
-    user_states[msg.chat.id]["description"] = message.text
-    user_states[msg.chat.id]["consumers"] = USERS.copy()
+    user_states[message.chat.id]["description"] = message.text
+    user_states[message.chat.id]["consumers"] = USERS.copy()
     
     bot.send_message(
         message.chat.id,
         "Ushbu xarajat kimlar uchun bo'ldi?\n(Ismlarni bosing, tanlab bo'lgach **'💾 Xarajatni saqlash'** bosing):",
-        reply_markup=get_split_keyboard(user_states[msg.chat.id]["consumers"]),
+        reply_markup=get_split_keyboard(user_states[message.chat.id]["consumers"]),
         parse_mode="Markdown"
     )
 
@@ -157,7 +155,6 @@ def process_save(call):
         reply_markup=get_main_keyboard()
     )
 
-# --- HISOBOT BO'LIMI ---
 @bot.message_handler(func=lambda msg: msg.text == "📊 Hisobot va Teng bo'lish")
 def show_report(message):
     conn = sqlite3.connect(DB_NAME)
@@ -224,7 +221,6 @@ def show_report(message):
 
     bot.send_message(message.chat.id, report_text, parse_mode="Markdown")
 
-# --- TO'LOV QILISH BO'LIMI ---
 @bot.message_handler(func=lambda msg: msg.text == "💳 To'lov qilish")
 def start_payment(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -292,7 +288,6 @@ def handle_receipt_photo(message):
         reply_markup=get_main_keyboard()
     )
 
-# --- BAZANI TOZALASH (PIN-KOD BILAN) ---
 @bot.message_handler(func=lambda msg: msg.text == "🧹 Bazani tozalash")
 def request_pin(message):
     user_states[message.chat.id] = {"state": "awaiting_pin"}
@@ -317,7 +312,4 @@ def check_pin_and_clear(message):
         bot.send_message(message.chat.id, "🗑 **Barcha xarajatlar va hisobotlar muvaffaqiyatli tozalandi!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
     else:
         del user_states[message.chat.id]
-        bot.send_message(message.chat.id, "❌ **Noto'g'ri PIN-kod!** Baza tozalanmadi.", reply_markup=get_main_keyboard(), parse_mode="Markdown")
-
-print("Bot va Baza tayyor!")
-bot.infinity_polling()
+        bot.send_message(message.chat.id, "❌ **Noto'g'ri PIN-kod!** Baza tozalanmadi
