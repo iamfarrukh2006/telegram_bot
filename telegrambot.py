@@ -1,21 +1,6 @@
-import os
 import sqlite3
-from flask import Flask
-from threading import Thread
 import telebot
 from telebot import types
-
-# Flask serveri (Render 24/7 ishlashi uchun)
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot muvaffaqiyatli ishlamoqda!"
-
-def run():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-
-Thread(target=run).start()
 
 # --- TELEGRAM BOT SOZLAMALARI ---
 BOT_TOKEN = "8714133730:AAE5ppZdITPUPiJ6GehXxHmrVsCJ0EI_srw"
@@ -93,7 +78,7 @@ def process_payer(call):
 def process_amount(message):
     try:
         amount = float(message.text.replace(',', '.'))
-        user_states[msg.chat.id]["amount"] = amount
+        user_states[message.chat.id]["amount"] = amount
         bot.send_message(message.chat.id, "Xarajat haqida qisqacha izoh kiriting (masalan: Tushlik yoki Taksi):")
     except ValueError:
         bot.send_message(message.chat.id, "Iltimos, faqat raqam kiriting! Masalan: 50000")
@@ -177,4 +162,162 @@ def process_save(call):
 def show_report(message):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT payer, amount, description, consumers FROM
+    cursor.execute("SELECT payer, amount, description, consumers FROM expenses")
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        bot.send_message(message.chat.id, "Hozircha hech qanday xarajat kiritilmagan.")
+        return
+
+    total_spent = sum(r[1] for r in rows)
+    paid = {u: 0.0 for u in USERS}
+    should_pay = {u: 0.0 for u in USERS}
+
+    report_text = "📋 **XARAJATLAR RO'YXATI:**\n\n"
+    for idx, (payer, amount, desc, consumers_str) in enumerate(rows, 1):
+        c_list = consumers_str.split(",")
+        split_amount = amount / len(c_list)
+        paid[payer] += amount
+        for c in c_list:
+            should_pay[c] += split_amount
+        
+        consumers_formatted = ", ".join(c_list)
+        report_text += f"{idx}. **{payer}**: {amount:,.0f} so'm ({desc})\n   └ Kimlarga: _{consumers_formatted}_\n\n"
+
+    report_text += f"💵 **JAMI XARAJAT:** {total_spent:,.0f} so'm\n\n"
+    report_text += "👤 **KIM QANCHA SARFLAGAN:**\n"
+    for u in USERS:
+        report_text += f"• {u}: {paid[u]:,.0f} so'm\n"
+
+    balances = {u: paid[u] - should_pay[u] for u in USERS}
+    debtors = []
+    creditors = []
+
+    for u, bal in balances.items():
+        if bal < -1:
+            debtors.append({'user': u, 'amount': -bal})
+        elif bal > 1:
+            creditors.append({'user': u, 'amount': bal})
+
+    settlements = []
+    i, j = 0, 0
+    while i < len(debtors) and j < len(creditors):
+        d = debtors[i]
+        c = creditors[j]
+        settle_val = min(d['amount'], c['amount'])
+        settlements.append(f"🔴 **{d['user']}** -> 🟢 **{c['user']}**: **{settle_val:,.0f} so'm**")
+
+        d['amount'] -= settle_val
+        c['amount'] -= settle_val
+
+        if d['amount'] < 1:
+            i += 1
+        if c['amount'] < 1:
+            j += 1
+
+    report_text += "\n🤝 **KIM KIMGA QANCHA BERISHI KERAK:**\n"
+    if settlements:
+        report_text += "\n".join(settlements)
+    else:
+        report_text += "Barcha hisob-kitoblar teng! Hech kim qarzdor emas."
+
+    bot.send_message(message.chat.id, report_text, parse_mode="Markdown")
+
+# --- TO'LOV QILISH BO'LIMI ---
+@bot.message_handler(func=lambda msg: msg.text == "💳 To'lov qilish")
+def start_payment(message):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for user in USERS:
+        markup.add(types.InlineKeyboardButton(user, callback_data=f"pay_user_{user}"))
+    bot.send_message(message.chat.id, "👤 **Kim bo'lib to'lov qilyapsiz? Ismingizni tanlang:**", reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_user_"))
+def process_payment_user(call):
+    selected_user = call.data.split("_")[2]
+    bot.answer_callback_query(call.id)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT payer, amount, consumers FROM expenses")
+    rows = cursor.fetchall()
+    conn.close()
+
+    paid = {u: 0.0 for u in USERS}
+    should_pay = {u: 0.0 for u in USERS}
+
+    for payer, amount, consumers_str in rows:
+        c_list = consumers_str.split(",")
+        split_amount = amount / len(c_list)
+        paid[payer] += amount
+        for c in c_list:
+            should_pay[c] += split_amount
+
+    balances = {u: paid[u] - should_pay[u] for u in USERS}
+    user_balance = balances.get(selected_user, 0)
+    
+    user_states[call.message.chat.id] = {"state": "awaiting_receipt", "paying_user": selected_user}
+
+    if user_balance < -1:
+        debt_amount = -user_balance
+        bot.send_message(
+            call.message.chat.id,
+            f"👤 Tanlangan ism: **{selected_user}**\n"
+            f"🔴 Sizning umumiy qarzingiz: **{debt_amount:,.0f} so'm**\n\n"
+            f"📸 Iltimos, pulni o'tkazganingizdan keyin **to'lov chekini (rasm yoki skrinshot)** yuboring:",
+            parse_mode="Markdown"
+        )
+    else:
+        bot.send_message(
+            call.message.chat.id,
+            f"👤 Tanlangan ism: **{selected_user}**\n"
+            f"🟢 Sizda hozircha to'lanishi kerak bo'lgan qarz mavjud emas!\n\n"
+            f"Baribir chek yubormoqchi bo'lsangiz, rasmini tashlashingiz mumkin:",
+            parse_mode="Markdown"
+        )
+
+@bot.message_handler(content_types=['photo'], func=lambda msg: msg.chat.id in user_states and user_states[msg.chat.id].get("state") == "awaiting_receipt")
+def handle_receipt_photo(message):
+    state = user_states[message.chat.id]
+    paying_user = state["paying_user"]
+    
+    del user_states[message.chat.id]
+
+    bot.reply_to(
+        message,
+        f"✅ **To'lov cheki qabul qilindi!**\n\n"
+        f"👤 Yuboruvchi: **{paying_user}**\n"
+        f"📌 Status: Guruh a'zolari tekshirishi uchun yuborildi.",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
+    )
+
+# --- BAZANI TOZALASH (PIN-KOD BILAN) ---
+@bot.message_handler(func=lambda msg: msg.text == "🧹 Bazani tozalash")
+def request_pin(message):
+    user_states[message.chat.id] = {"state": "awaiting_pin"}
+    bot.send_message(
+        message.chat.id,
+        "🔒 Bazani tozalash uchun maxsus **PIN-kodni** kiriting (PIN: 1234):",
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(func=lambda msg: msg.chat.id in user_states and user_states[message.chat.id].get("state") == "awaiting_pin")
+def check_pin_and_clear(message):
+    entered_pin = message.text.strip()
+    
+    if entered_pin == CLEAR_PIN:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM expenses")
+        conn.commit()
+        conn.close()
+        
+        del user_states[message.chat.id]
+        bot.send_message(message.chat.id, "🗑 **Barcha xarajatlar va hisobotlar muvaffaqiyatli tozalandi!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    else:
+        del user_states[message.chat.id]
+        bot.send_message(message.chat.id, "❌ **Noto'g'ri PIN-kod!** Baza tozalanmadi.", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+
+print("Bot va Baza tayyor!")
+bot.infinity_polling()
