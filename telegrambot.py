@@ -6,7 +6,6 @@ from telebot import types
 from flask import Flask
 
 # --- TELEGRAM BOT SOZLAMALARI ---
-# Agar 409 konflikt xatosi ketsa, @BotFather'dan yangi token olib shu yerga yozasiz
 BOT_TOKEN = "8714133730:AAHV9GEV3wGXC5pbExQbHMJjYllnJt2Xt7k"
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -226,90 +225,3 @@ def start_payment(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
     for user in USERS:
         markup.add(types.InlineKeyboardButton(user, callback_data=f"pay_user_{user}"))
-    bot.send_message(message.chat.id, "👤 **Kim bo'lib to'lov qilyapsiz? Ismingizni tanlang:**", reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_user_"))
-def process_payment_user(call):
-    selected_user = call.data.split("_")[2]
-    bot.answer_callback_query(call.id)
-    
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT payer, amount, consumers FROM expenses")
-    rows = cursor.fetchall()
-    conn.close()
-
-    paid = {u: 0.0 for u in USERS}
-    should_pay = {u: 0.0 for u in USERS}
-
-    for payer, amount, consumers_str in rows:
-        c_list = consumers_str.split(",")
-        split_amount = amount / len(c_list)
-        paid[payer] += amount
-        for c in c_list:
-            should_pay[c] += split_amount
-
-    balances = {u: paid[u] - should_pay[u] for u in USERS}
-    user_balance = balances.get(selected_user, 0)
-    
-    user_states[call.message.chat.id] = {"state": "awaiting_receipt", "paying_user": selected_user}
-
-    if user_balance < -1:
-        debt_amount = -user_balance
-        bot.send_message(
-            call.message.chat.id,
-            f"👤 Tanlangan ism: **{selected_user}**\n"
-            f"🔴 Sizning umumiy qarzingiz: **{debt_amount:,.0f} so'm**\n\n"
-            f"📸 Iltimos, pulni o'tkazganingizdan keyin **to'lov chekini (rasm yoki skrinshot)** yuboring:",
-            parse_mode="Markdown"
-        )
-    else:
-        bot.send_message(
-            call.message.chat.id,
-            f"👤 Tanlangan ism: **{selected_user}**\n"
-            f"🟢 Sizda hozircha to'lanishi kerak bo'lgan qarz mavjud emas!\n\n"
-            f"Baribir chek yubormoqchi bo'lsangiz, rasmini tashlashingiz mumkin:",
-            parse_mode="Markdown"
-        )
-
-@bot.message_handler(content_types=['photo'], func=lambda msg: msg.chat.id in user_states and user_states[msg.chat.id].get("state") == "awaiting_receipt")
-def handle_receipt_photo(message):
-    state = user_states[message.chat.id]
-    paying_user = state["paying_user"]
-    
-    del user_states[message.chat.id]
-
-    bot.reply_to(
-        message,
-        f"✅ **To'lov cheki qabul qilindi!**\n\n"
-        f"👤 Yuboruvchi: **{paying_user}**\n"
-        f"📌 Status: Guruh a'zolari tekshirishi uchun yuborildi.",
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
-    )
-
-@bot.message_handler(func=lambda msg: msg.text == "🧹 Bazani tozalash")
-def request_pin(message):
-    user_states[message.chat.id] = {"state": "awaiting_pin"}
-    bot.send_message(
-        message.chat.id,
-        "🔒 Bazani tozalash uchun maxsus **PIN-kodni** kiriting (PIN: 1234):",
-        parse_mode="Markdown"
-    )
-
-@bot.message_handler(func=lambda msg: msg.chat.id in user_states and user_states[message.chat.id].get("state") == "awaiting_pin")
-def check_pin_and_clear(message):
-    entered_pin = message.text.strip()
-    
-    if entered_pin == CLEAR_PIN:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM expenses")
-        conn.commit()
-        conn.close()
-        
-        del user_states[message.chat.id]
-        bot.send_message(message.chat.id, "🗑 **Barcha xarajatlar va hisobotlar muvaffaqiyatli tozalandi!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    else:
-        del user_states[message.chat.id]
-        bot.send_message(message.chat.id, "❌ **Noto'g'ri PIN-kod!** Baza tozalanmadi
