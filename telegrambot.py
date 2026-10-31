@@ -3,7 +3,7 @@ import telebot
 from telebot import types
 
 # --- TELEGRAM BOT SOZLAMALARI ---
-BOT_TOKEN = "8714133730:AAE5ppZdITPUPiJ6GehXxHmrVsCJ0EI_srw"
+BOT_TOKEN = "8714133730:AAHV9GEV3wGXC5pbExQbHMJjYllnJt2Xt7k"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 USERS = ["Farrux", "Bexruz", "Temur", "Jalol", "Bunyod"]
